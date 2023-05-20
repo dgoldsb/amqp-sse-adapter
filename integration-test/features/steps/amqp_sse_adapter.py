@@ -2,7 +2,7 @@ from queue import Queue, Empty
 from threading import Event as ThreadingEvent
 from threading import Thread
 
-import requests
+import pika
 from behave import given, then, when
 from behave.runner import Context
 from sseclient import SSEClient, Event
@@ -21,6 +21,15 @@ class SseConsumer:
                 queue.put(message)
 
 
+@given('the exchange {} exists')
+def step_impl(context: Context, exchange: str):
+    parameters = pika.URLParameters("amqp://guest:guest@localhost:5672/%2F")
+    connection = pika.BlockingConnection(parameters)
+    channel = connection.channel()
+    channel.exchange_declare(exchange)
+    connection.close()
+
+
 @given('an SSE stream is opened for routing key "{}"')
 def step_impl(context: Context, routing_key: str):
     stream = SseConsumer(context.threads_stop_signal)
@@ -33,7 +42,15 @@ def step_impl(context: Context, routing_key: str):
 
 @when('"{}" is emitted for routing key "{}"')
 def step_impl(context: Context, message: str, routing_key: str):
-    requests.get(f"http://localhost:8000/events/{routing_key}/{message}")
+    parameters = pika.URLParameters("amqp://guest:guest@localhost:5672/%2F")
+    connection = pika.BlockingConnection(parameters)
+    channel = connection.channel()
+    channel.basic_publish(
+        exchange="test_exchange",  # TODO: from configuration
+        routing_key=routing_key,
+        body=message.encode(),
+    )
+    connection.close()
 
 
 @then('the SSE stream has received the value "{}"')

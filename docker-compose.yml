@@ -18,6 +18,13 @@ services:
     image: "dgoldsb/amqp-sse-adapter:latest"
     ports:
       - "8000:8000"
+    environment:
+      RUST_LOG: debug
+      HOST: rabbitmq
+      PORT: 5672
+      USERNAME: guest
+      PASSWORD: guest
+      EXCHANGE: test_exchange
     depends_on:
       rabbitmq:
         condition: service_healthy

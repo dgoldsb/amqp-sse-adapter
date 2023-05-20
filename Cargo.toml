@@ -8,5 +8,11 @@ edition = "2021"
 [dependencies]
 actix-web = "4"
 actix-web-lab = "0.19.1"
-parking_lot = "0.12.1"
+amqprs = "1.2.1"
+async-trait = "0.1.68"
+env_logger = "0.10.0"
 futures-util = { version = "0.3.25", default-features = false, features = ["std"] }
+lazy_static = "1.4.0"
+parking_lot = "0.12.1"
+rand = "0.8.5"
+tokio = "1.28.1"

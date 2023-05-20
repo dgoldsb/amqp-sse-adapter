@@ -1,29 +1,50 @@
+use crate::listener::{create_channel, CHANNEL};
+use crate::routing_key::{MyString, RoutingKey};
 use actix_web::rt::time::interval;
+use actix_web_lab::__reexports::tracing::log;
 use actix_web_lab::sse::{self, ChannelStream, Sse};
+use amqprs::channel::{BasicCancelArguments, Channel};
+use amqprs::consumer::AsyncConsumer;
+use amqprs::{BasicProperties, Deliver};
 use futures_util::future;
+use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 
-pub type RoutingKey = [char; 255];
+#[derive(Clone, Debug)]
+struct SenderTagPair {
+    sender: sse::Sender,
+    consumer_tag: String,
+}
 
-pub struct Broadcaster {
-    inner: Mutex<BroadcasterInner>,
+pub struct SseBroadcastingConsumer {
+    inner: Mutex<SseBroadcastingConsumerInner>,
 }
 
 #[derive(Clone, Debug, Default)]
-/// Maintains a mapping from routine key to a sequence of open SSE connections.
-struct BroadcasterInner {
-    clients: HashMap<RoutingKey, Vec<sse::Sender>>,
+/// Maintains a mapping from routing key to a sequence of open SSE connections.
+struct SseBroadcastingConsumerInner {
+    routing_key_consumers_map: HashMap<RoutingKey, Vec<SenderTagPair>>,
 }
 
-impl Broadcaster {
+/// An AMQP consumer that publishes the message body on an SSE sender.
+/// The correct sender(s) are chosen based on the routing key.
+impl SseBroadcastingConsumer {
+    pub fn instance() -> &'static Arc<Self> {
+        lazy_static! {
+            static ref INSTANCE: Arc<SseBroadcastingConsumer> = SseBroadcastingConsumer::create();
+        }
+
+        &INSTANCE
+    }
+
     /// Constructs new broadcaster and spawns ping loop.
     pub fn create() -> Arc<Self> {
-        let this = Arc::new(Broadcaster {
-            inner: Mutex::new(BroadcasterInner::default()),
+        let this = Arc::new(SseBroadcastingConsumer {
+            inner: Mutex::new(SseBroadcastingConsumerInner::default()),
         });
-        Broadcaster::spawn_ping(Arc::clone(&this));
+        SseBroadcastingConsumer::spawn_ping(Arc::clone(&this));
 
         this
     }
@@ -42,31 +63,41 @@ impl Broadcaster {
 
     /// Removes all non-responsive clients from broadcast list.
     async fn remove_stale_clients(&self) {
-        let clients = &mut self.inner.lock().clients;
-        for (key, value) in clients.clone().iter() {
+        let routing_key_consumers_map = &mut self.inner.lock().routing_key_consumers_map;
+        for (key, value) in routing_key_consumers_map.clone().iter() {
             let ok_senders = self.remove_stale_clients_from_vector(value).await;
-            clients.insert(*key, ok_senders);
+            routing_key_consumers_map.insert(*key, ok_senders);
         }
     }
 
     /// Removes all non-responsive clients from broadcast list.
     async fn remove_stale_clients_from_vector(
         &self,
-        senders: &Vec<sse::Sender>,
-    ) -> Vec<sse::Sender> {
-        println!("active client {:?}", senders);
+        senders: &Vec<SenderTagPair>,
+    ) -> Vec<SenderTagPair> {
+        log::debug!("Active clients are {:?}", senders);
 
         let mut ok_senders = Vec::new();
 
-        println!("okay active client {:?}", ok_senders);
+        log::debug!("Okay active clients are {:?}", ok_senders);
 
-        for sender in senders {
-            if sender
+        for pair in senders {
+            if pair
+                .sender
                 .send(sse::Event::Comment("ping".into()))
                 .await
                 .is_ok()
             {
-                ok_senders.push(sender.clone());
+                ok_senders.push(pair.clone());
+            } else {
+                log::info!("Client timed out, consumer tag is {}", pair.consumer_tag);
+                CHANNEL
+                    .lock()
+                    .get_or_init(|| async { create_channel().await })
+                    .await
+                    .basic_cancel(BasicCancelArguments::new(&pair.consumer_tag))
+                    .await
+                    .unwrap();
             }
         }
 
@@ -74,32 +105,41 @@ impl Broadcaster {
     }
 
     /// Registers client with broadcaster, returning an SSE response body.
-    pub async fn new_client(&self, routing_key: &RoutingKey) -> Sse<ChannelStream> {
-        println!("starting creation");
-        let (tx, rx) = sse::channel(10);
+    pub async fn new_client(
+        &self,
+        routing_key: &RoutingKey,
+        consumer_tag: &String,
+    ) -> Sse<ChannelStream> {
+        log::debug!("Starting creation of a new SSE client");
+        let (sender, stream) = sse::channel(10);
 
-        tx.send(sse::Data::new("connected")).await.unwrap();
-        println!("creating new clients success {:?}", tx);
+        sender.send(sse::Data::new("connected")).await.unwrap();
+        log::debug!("Creating new clients success {:?}", sender);
 
         let mut default_vec = Vec::new();
-
+        let consumer_tag = consumer_tag.clone();
         self.inner
             .lock()
-            .clients
+            .routing_key_consumers_map
             .get_mut(routing_key)
             .unwrap_or(&mut default_vec)
-            .push(tx);
+            .push(SenderTagPair {
+                sender,
+                consumer_tag,
+            });
 
         if default_vec.len() != 0 {
-            // TODO: Create key if not exists.
-            self.inner.lock().clients.insert(*routing_key, default_vec);
+            self.inner
+                .lock()
+                .routing_key_consumers_map
+                .insert(*routing_key, default_vec);
         }
-        rx
+        stream
     }
 
-    /// Broadcasts `msg` to all clients.
+    /// Broadcasts `msg` to all clients that fall under this routing key.
     pub async fn broadcast(&self, key: &RoutingKey, msg: &str) {
-        let clients = self.inner.lock().clients.clone();
+        let clients = self.inner.lock().routing_key_consumers_map.clone();
 
         let default_vec = Vec::new();
 
@@ -107,10 +147,27 @@ impl Broadcaster {
             .get(key)
             .unwrap_or(&default_vec)
             .iter()
-            .map(|client| client.send(sse::Data::new(msg)));
+            .map(|pair| pair.sender.send(sse::Data::new(msg)));
 
         // try to send to all clients, ignoring failures
         // disconnected clients will get swept up by `remove_stale_clients`
         let _ = future::join_all(send_futures).await;
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncConsumer for &SseBroadcastingConsumer {
+    async fn consume(
+        &mut self,
+        _channel: &Channel,
+        deliver: Deliver,
+        _basic_properties: BasicProperties,
+        content: Vec<u8>,
+    ) {
+        let body = String::from_utf8(content).unwrap();
+        let routing_key: RoutingKey = MyString(deliver.routing_key().to_string())
+            .try_into()
+            .unwrap();
+        self.broadcast(&routing_key, &body).await;
     }
 }
