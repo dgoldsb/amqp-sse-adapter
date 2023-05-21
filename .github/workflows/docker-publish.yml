@@ -16,8 +16,17 @@ jobs:
         DOCKER_USER: ${{secrets.DOCKER_USER}}
         DOCKER_PASSWORD: ${{secrets.DOCKER_PASSWORD}}
       run: |
-        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD 
+        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag dgoldsb/amqp-sse-adapter:$(date +%s)
+      run: docker build . --file Dockerfile --tag dgoldsb/amqp-sse-adapter:latest
+    - name: Run integration tests
+      working-directory: integration-test
+      run: |
+        chmod +x run.sh
+        bash run.sh
+      shell: bash
     - name: Docker Push
-      run: docker push dgoldsb/amqp-sse-adapter
+      run: docker push dgoldsb/amqp-sse-adapter:latest

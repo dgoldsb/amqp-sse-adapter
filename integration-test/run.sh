@@ -7,7 +7,7 @@ if [ -z "${PIPENV_ACTIVE}" ]; then
 fi
 
 echo "Bringing docker compose up"
-docker compose --project-name integration-test --file ../docker-compose.yml up --build -d
+docker compose --project-name integration-test --file ../docker-compose.yml up -d
 
 echo "Running Behave"
 behave "$@" --no-skipped --format pretty
