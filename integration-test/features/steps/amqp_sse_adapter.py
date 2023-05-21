@@ -1,3 +1,4 @@
+import time
 from queue import Queue, Empty
 from threading import Event as ThreadingEvent
 from threading import Thread
@@ -38,6 +39,8 @@ def step_impl(context: Context, routing_key: str):
         args=(f"http://localhost:8000/events/{routing_key}", context.sse_messages),
     )
     thread.start()
+    # Give the thread time to start, ideally this is done with a `threading.Signal`.
+    time.sleep(1)
 
 
 @when('"{}" is emitted for routing key "{}"')
@@ -54,16 +57,29 @@ def step_impl(context: Context, message: str, routing_key: str):
 
 
 @then('the SSE stream has received the value "{}"')
-def step_impl(context: Context, _contents: str):
+def step_impl(context: Context, contents: str):
     found = []
     try:
         while True:
-            event: Event = context.sse_messages.get(timeout=0.5)
-            # TODO: Connected should become an event content, event remains the
-            #  routing key.
-            if event:
+            if contents in found:
                 break
-            else:
-                found.append(event.event)
+
+            event: Event = context.sse_messages.get(timeout=0.5)
+            found.append(event.data)
     except Empty:
-        raise AssertionError(f"Expected {_contents}, got {found}")
+        raise AssertionError(f"Expected {contents}, got {found}")
+
+
+@then('the SSE stream has not received the value "{}"')
+def step_impl(context: Context, contents: str):
+    found = []
+    try:
+        while True:
+            if contents in found:
+                break
+
+            event: Event = context.sse_messages.get(timeout=0.5)
+            found.append(event.data)
+    except Empty:
+        return
+    raise AssertionError("Did not expect this message!")
