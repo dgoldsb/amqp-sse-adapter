@@ -79,8 +79,6 @@ impl SseBroadcastingConsumer {
 
         let mut ok_senders = Vec::new();
 
-        log::debug!("Okay active clients are {:?}", ok_senders);
-
         for pair in senders {
             if pair
                 .sender
@@ -88,6 +86,10 @@ impl SseBroadcastingConsumer {
                 .await
                 .is_ok()
             {
+                log::debug!(
+                    "Client for consumer tag {} responded to ping",
+                    pair.consumer_tag
+                );
                 ok_senders.push(pair.clone());
             } else {
                 log::info!("Client timed out, consumer tag is {}", pair.consumer_tag);
@@ -100,6 +102,8 @@ impl SseBroadcastingConsumer {
                     .unwrap();
             }
         }
+
+        log::debug!("Okay active clients are {:?}", ok_senders);
 
         ok_senders
     }

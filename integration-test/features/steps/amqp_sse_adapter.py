@@ -21,7 +21,7 @@ class SseConsumer:
                 queue.put(message)
 
 
-@given('the exchange {} exists')
+@given("the exchange {} exists")
 def step_impl(context: Context, exchange: str):
     parameters = pika.URLParameters("amqp://guest:guest@localhost:5672/%2F")
     connection = pika.BlockingConnection(parameters)
